@@ -72,8 +72,11 @@ export default function UserList({ onSelectUser }: UserListProps) {
       <ScrollArea className="flex-1">
         <div className="p-2 space-y-1">
           {profiles.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground text-sm">
-              No users online
+            <div className="text-center py-8 px-4 space-y-2">
+              <p className="text-muted-foreground text-sm">No other users online</p>
+              <p className="text-xs text-muted-foreground">
+                Open an incognito window and sign up with another account to test P2P messaging
+              </p>
             </div>
           ) : (
             profiles.map((profile) => (
