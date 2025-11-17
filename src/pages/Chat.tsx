@@ -38,22 +38,42 @@ export default function Chat() {
       const pubKey = publicKeyToBase64(newKeys.publicKey);
       setPublicKey(pubKey);
       
-      // Store public key in profile
-      await supabase
-        .from('profiles')
-        .update({ public_key: pubKey } as any)
-        .eq('user_id', user!.id);
+      // Store public key in profile (with retry logic for schema cache)
+      const updatePublicKey = async (retries = 3) => {
+        const { error } = await supabase
+          .from('profiles')
+          .update({ public_key: pubKey } as any)
+          .eq('user_id', user!.id);
+        
+        if (error && retries > 0 && error.message.includes('schema cache')) {
+          console.log('Schema cache refreshing, retrying...', retries);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          return updatePublicKey(retries - 1);
+        }
+      };
+      
+      await updatePublicKey();
       
       toast.success('Encryption keys generated locally');
     } else {
       const pubKey = publicKeyToBase64(keys.publicKey);
       setPublicKey(pubKey);
       
-      // Ensure public key is in profile
-      await supabase
-        .from('profiles')
-        .update({ public_key: pubKey } as any)
-        .eq('user_id', user!.id);
+      // Ensure public key is in profile (with retry logic)
+      const updatePublicKey = async (retries = 3) => {
+        const { error } = await supabase
+          .from('profiles')
+          .update({ public_key: pubKey } as any)
+          .eq('user_id', user!.id);
+        
+        if (error && retries > 0 && error.message.includes('schema cache')) {
+          console.log('Schema cache refreshing, retrying...', retries);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          return updatePublicKey(retries - 1);
+        }
+      };
+      
+      await updatePublicKey();
     }
     
     setKeysReady(true);
