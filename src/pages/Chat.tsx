@@ -41,7 +41,7 @@ export default function Chat() {
       // Store public key in profile
       await supabase
         .from('profiles')
-        .update({ public_key: pubKey })
+        .update({ public_key: pubKey } as any)
         .eq('user_id', user!.id);
       
       toast.success('Encryption keys generated locally');
@@ -52,7 +52,7 @@ export default function Chat() {
       // Ensure public key is in profile
       await supabase
         .from('profiles')
-        .update({ public_key: pubKey })
+        .update({ public_key: pubKey } as any)
         .eq('user_id', user!.id);
     }
     
