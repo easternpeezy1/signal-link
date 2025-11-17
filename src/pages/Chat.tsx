@@ -2,16 +2,23 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Shield, LogOut, Users, Lock } from 'lucide-react';
+import { Shield, LogOut, Lock } from 'lucide-react';
 import { generateKeyPair, storeKeys, getKeys, publicKeyToBase64 } from '@/lib/crypto';
+import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import UserList from '@/components/UserList';
+import MessageInterface from '@/components/MessageInterface';
 
 export default function Chat() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const [keysReady, setKeysReady] = useState(false);
   const [publicKey, setPublicKey] = useState<string>('');
+  const [selectedPeer, setSelectedPeer] = useState<{
+    id: string;
+    name: string;
+    publicKey: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!user) {
@@ -28,10 +35,25 @@ export default function Chat() {
     if (!keys) {
       const newKeys = await generateKeyPair();
       await storeKeys(newKeys.publicKey, newKeys.privateKey);
-      setPublicKey(publicKeyToBase64(newKeys.publicKey));
+      const pubKey = publicKeyToBase64(newKeys.publicKey);
+      setPublicKey(pubKey);
+      
+      // Store public key in profile
+      await supabase
+        .from('profiles')
+        .update({ public_key: pubKey })
+        .eq('user_id', user!.id);
+      
       toast.success('Encryption keys generated locally');
     } else {
-      setPublicKey(publicKeyToBase64(keys.publicKey));
+      const pubKey = publicKeyToBase64(keys.publicKey);
+      setPublicKey(pubKey);
+      
+      // Ensure public key is in profile
+      await supabase
+        .from('profiles')
+        .update({ public_key: pubKey })
+        .eq('user_id', user!.id);
     }
     
     setKeysReady(true);
@@ -40,6 +62,10 @@ export default function Chat() {
   const handleSignOut = async () => {
     await signOut();
     navigate('/auth');
+  };
+
+  const handleSelectUser = (userId: string, username: string, peerPublicKey: string) => {
+    setSelectedPeer({ id: userId, name: username, publicKey: peerPublicKey });
   };
 
   if (!keysReady) {
@@ -54,7 +80,7 @@ export default function Chat() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background flex flex-col">
       <header className="border-b border-border bg-card">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -76,45 +102,41 @@ export default function Chat() {
         </div>
       </header>
 
-      <div className="container mx-auto px-4 py-8 max-w-4xl">
-        <div className="bg-card border border-border rounded-lg p-8 text-center space-y-6">
-          <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto">
-            <Users className="h-8 w-8 text-primary" />
-          </div>
-          
-          <div className="space-y-2">
-            <h2 className="text-2xl font-semibold">P2P Encrypted Messenger</h2>
-            <p className="text-muted-foreground">
-              Your encryption keys are ready. Chat interface coming soon!
-            </p>
-          </div>
-
-          <div className="bg-muted/50 rounded-lg p-4 text-left space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">Status:</span>
-              <span className="flex items-center gap-2 text-sm text-success">
-                <span className="status-indicator status-online"></span>
-                Online & Encrypted
-              </span>
+      <div className="flex-1 flex overflow-hidden">
+        <div className="w-80">
+          <UserList onSelectUser={handleSelectUser} />
+        </div>
+        <div className="flex-1">
+          {selectedPeer ? (
+            <MessageInterface
+              peerId={selectedPeer.id}
+              peerName={selectedPeer.name}
+              peerPublicKey={selectedPeer.publicKey}
+              onClose={() => setSelectedPeer(null)}
+            />
+          ) : (
+            <div className="h-full flex items-center justify-center text-center space-y-4 px-8">
+              <div>
+                <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
+                  <Shield className="h-8 w-8 text-primary" />
+                </div>
+                <h2 className="text-xl font-semibold mb-2">P2P Encrypted Messenger</h2>
+                <p className="text-muted-foreground mb-6">
+                  Select a user to start a secure peer-to-peer conversation
+                </p>
+                <div className="text-sm text-muted-foreground space-y-2">
+                  <p className="flex items-center gap-2 justify-center">
+                    <Lock className="h-4 w-4" />
+                    Zero-knowledge - messages never stored on servers
+                  </p>
+                  <p className="flex items-center gap-2 justify-center">
+                    <Shield className="h-4 w-4" />
+                    WebRTC P2P with E2E encryption
+                  </p>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">Your Public Key:</span>
-              <code className="text-xs bg-background px-2 py-1 rounded">
-                {publicKey.substring(0, 16)}...
-              </code>
-            </div>
-          </div>
-
-          <div className="text-sm text-muted-foreground space-y-2">
-            <p className="flex items-center gap-2 justify-center">
-              <Lock className="h-4 w-4" />
-              Zero-knowledge architecture - messages never stored on servers
-            </p>
-            <p className="flex items-center gap-2 justify-center">
-              <Shield className="h-4 w-4" />
-              End-to-end encryption with keys stored only on your device
-            </p>
-          </div>
+          )}
         </div>
       </div>
     </div>
