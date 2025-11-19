@@ -20,6 +20,7 @@ export type Database = {
           id: string
           last_seen: string | null
           online_status: boolean | null
+          public_key: string | null
           updated_at: string | null
           user_id: string
           username: string
@@ -29,6 +30,7 @@ export type Database = {
           id?: string
           last_seen?: string | null
           online_status?: boolean | null
+          public_key?: string | null
           updated_at?: string | null
           user_id: string
           username: string
@@ -38,6 +40,7 @@ export type Database = {
           id?: string
           last_seen?: string | null
           online_status?: boolean | null
+          public_key?: string | null
           updated_at?: string | null
           user_id?: string
           username?: string
