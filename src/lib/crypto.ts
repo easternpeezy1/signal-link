@@ -1,15 +1,14 @@
 // Zero-knowledge cryptography utilities using proper ECDH and AEAD
 // All encryption happens locally - keys never leave the device
 
-// @ts-ignore - @noble/curves types may not be perfect
-import { x25519 } from '@noble/curves/ed25519';
+import { x25519 } from '@noble/curves/ed25519.js';
 import localforage from 'localforage';
 
 const KEYS_STORE = 'securechat_keys';
 
 // Generate a new X25519 keypair for the user
 export async function generateKeyPair(): Promise<{ publicKey: Uint8Array; privateKey: Uint8Array }> {
-  const privateKey = x25519.utils.randomPrivateKey();
+  const privateKey = x25519.utils.randomSecretKey();
   const publicKey = x25519.getPublicKey(privateKey);
   
   return { publicKey, privateKey };
