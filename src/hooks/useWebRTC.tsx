@@ -18,6 +18,8 @@ export function useWebRTC(peerId: string, peerPublicKey: string) {
   const [connected, setConnected] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [sharedSecret, setSharedSecret] = useState<Uint8Array | null>(null);
+  const [sequenceNumber, setSequenceNumber] = useState(0);
+  const [expectedIncomingSequence, setExpectedIncomingSequence] = useState(0);
   const channelRef = useRef<any>(null);
 
   useEffect(() => {
@@ -40,8 +42,20 @@ export function useWebRTC(peerId: string, peerPublicKey: string) {
         trickle: true,
         config: {
           iceServers: [
+            // STUN servers for NAT traversal
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
+            { urls: 'stun:global.stun.twilio.com:3478' },
+            // TURN servers for restrictive networks (add credentials in production)
+            {
+              urls: 'turn:openrelay.metered.ca:80',
+              username: 'openrelayproject',
+              credential: 'openrelayproject',
+            },
+            {
+              urls: 'turn:openrelay.metered.ca:443',
+              username: 'openrelayproject',
+              credential: 'openrelayproject',
+            },
           ]
         }
       });
@@ -70,16 +84,29 @@ export function useWebRTC(peerId: string, peerPublicKey: string) {
       });
 
       peerConnection.on('data', async (data) => {
-        const encryptedMsg = JSON.parse(data.toString());
-        if (secret) {
-          const decrypted = await decryptMessage(encryptedMsg.text, secret);
-          setMessages(prev => [...prev, {
-            id: encryptedMsg.id,
-            text: decrypted,
-            sender: peerId,
-            timestamp: encryptedMsg.timestamp,
-            encrypted: true
-          }]);
+        try {
+          const encryptedMsg = JSON.parse(data.toString());
+          if (secret) {
+            // Decrypt and verify message authenticity, sequence, and timestamp
+            const decrypted = await decryptMessage(
+              encryptedMsg.text, 
+              secret, 
+              expectedIncomingSequence
+            );
+            
+            setExpectedIncomingSequence(prev => prev + 1);
+            
+            setMessages(prev => [...prev, {
+              id: encryptedMsg.id,
+              text: decrypted.text,
+              sender: peerId,
+              timestamp: decrypted.timestamp,
+              encrypted: true
+            }]);
+          }
+        } catch (error) {
+          console.error('Failed to decrypt message:', error);
+          // Don't add invalid/tampered messages
         }
       });
 
@@ -120,23 +147,29 @@ export function useWebRTC(peerId: string, peerPublicKey: string) {
   const sendMessage = async (text: string) => {
     if (!peer || !connected || !sharedSecret) return;
 
-    const encrypted = await encryptMessage(text, sharedSecret);
-    const message = {
-      id: crypto.randomUUID(),
-      text: encrypted,
-      timestamp: Date.now()
-    };
+    try {
+      const encrypted = await encryptMessage(text, sharedSecret, sequenceNumber);
+      const message = {
+        id: crypto.randomUUID(),
+        text: encrypted,
+        timestamp: Date.now()
+      };
 
-    peer.send(JSON.stringify(message));
+      peer.send(JSON.stringify(message));
+      
+      setSequenceNumber(prev => prev + 1);
 
-    // Add to local messages
-    setMessages(prev => [...prev, {
-      id: message.id,
-      text: text,
-      sender: user?.id || '',
-      timestamp: message.timestamp,
-      encrypted: true
-    }]);
+      // Add to local messages
+      setMessages(prev => [...prev, {
+        id: message.id,
+        text: text,
+        sender: user?.id || '',
+        timestamp: message.timestamp,
+        encrypted: true
+      }]);
+    } catch (error) {
+      console.error('Failed to send message:', error);
+    }
   };
 
   return { connected, messages, sendMessage };

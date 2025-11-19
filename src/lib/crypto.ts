@@ -1,17 +1,16 @@
-// Zero-knowledge cryptography utilities
+// Zero-knowledge cryptography utilities using proper ECDH and AEAD
 // All encryption happens locally - keys never leave the device
 
+// @ts-ignore - @noble/curves types may not be perfect
+import { x25519 } from '@noble/curves/ed25519';
 import localforage from 'localforage';
 
 const KEYS_STORE = 'securechat_keys';
 
-// Generate a new keypair for the user
+// Generate a new X25519 keypair for the user
 export async function generateKeyPair(): Promise<{ publicKey: Uint8Array; privateKey: Uint8Array }> {
-  const privateKey = crypto.getRandomValues(new Uint8Array(32));
-  
-  // Derive public key by hashing the private key
-  const hashBuffer = await crypto.subtle.digest('SHA-256', privateKey);
-  const publicKey = new Uint8Array(hashBuffer);
+  const privateKey = x25519.utils.randomPrivateKey();
+  const publicKey = x25519.getPublicKey(privateKey);
   
   return { publicKey, privateKey };
 }
@@ -35,69 +34,147 @@ export async function getKeys(): Promise<{ publicKey: Uint8Array; privateKey: Ui
   };
 }
 
-// Generate shared secret for encryption (Diffie-Hellman)
+// Generate shared secret using X25519 ECDH
 export async function generateSharedSecret(privateKey: Uint8Array, peerPublicKey: Uint8Array): Promise<Uint8Array> {
-  // For now, we'll XOR the keys as a simple shared secret
-  // In production, you'd want proper ECDH
-  const secret = new Uint8Array(32);
-  for (let i = 0; i < 32; i++) {
-    secret[i] = privateKey[i] ^ peerPublicKey[i];
-  }
-  return secret;
-}
-
-// Encrypt message using shared secret
-export async function encryptMessage(message: string, sharedSecret: Uint8Array): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(message);
+  // Perform ECDH key exchange
+  const sharedSecret = x25519.getSharedSecret(privateKey, peerPublicKey);
   
-  // Use Web Crypto API for AES-GCM encryption
+  // Derive encryption key using HKDF-SHA256
+  const salt = new Uint8Array(32); // Zero salt for simplicity
+  const info = new TextEncoder().encode('SecureChat-v1-Encryption');
+  
+  // Convert to standard Uint8Array to avoid type issues
+  const secretBytes = new Uint8Array(sharedSecret);
+  
   const key = await crypto.subtle.importKey(
     'raw',
-    sharedSecret.slice(0, 32),
+    secretBytes,
+    'HKDF',
+    false,
+    ['deriveBits']
+  );
+  
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt,
+      info
+    },
+    key,
+    256 // 32 bytes for AES-256
+  );
+  
+  return new Uint8Array(derivedBits);
+}
+
+interface EncryptedMessage {
+  ciphertext: string;
+  iv: string;
+  sequence: number;
+  timestamp: number;
+}
+
+// Encrypt message using shared secret with AEAD (AES-GCM)
+export async function encryptMessage(
+  message: string, 
+  sharedSecret: Uint8Array,
+  sequence: number
+): Promise<string> {
+  const encoder = new TextEncoder();
+  
+  // Create authenticated payload with sequence number and timestamp
+  const timestamp = Date.now();
+  const payload = JSON.stringify({
+    text: message,
+    sequence,
+    timestamp
+  });
+  
+  const data = encoder.encode(payload);
+  
+  // Import key for AES-GCM (cast to fix TypeScript strictness)
+  const key = await crypto.subtle.importKey(
+    'raw',
+    sharedSecret as any,
     { name: 'AES-GCM' },
     false,
     ['encrypt']
   );
   
+  // Generate random IV (96 bits for AES-GCM)
   const iv = crypto.getRandomValues(new Uint8Array(12));
+  
+  // Encrypt with AEAD (provides both confidentiality and authenticity)
   const encrypted = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
     key,
     data
   );
   
-  // Combine IV and ciphertext
-  const combined = new Uint8Array(iv.length + encrypted.byteLength);
-  combined.set(iv, 0);
-  combined.set(new Uint8Array(encrypted), iv.length);
+  // Combine everything into a transportable format
+  const result: EncryptedMessage = {
+    ciphertext: btoa(String.fromCharCode(...new Uint8Array(encrypted))),
+    iv: btoa(String.fromCharCode(...iv)),
+    sequence,
+    timestamp
+  };
   
-  return btoa(String.fromCharCode(...combined));
+  return JSON.stringify(result);
 }
 
-// Decrypt message using shared secret
-export async function decryptMessage(encryptedMessage: string, sharedSecret: Uint8Array): Promise<string> {
-  const combined = Uint8Array.from(atob(encryptedMessage), c => c.charCodeAt(0));
+// Decrypt message using shared secret and verify authenticity
+export async function decryptMessage(
+  encryptedMessage: string, 
+  sharedSecret: Uint8Array,
+  expectedSequence?: number
+): Promise<{ text: string; sequence: number; timestamp: number }> {
+  const parsed: EncryptedMessage = JSON.parse(encryptedMessage);
   
-  const iv = combined.slice(0, 12);
-  const ciphertext = combined.slice(12);
+  // Convert from base64
+  const ciphertext = Uint8Array.from(atob(parsed.ciphertext), c => c.charCodeAt(0));
+  const iv = Uint8Array.from(atob(parsed.iv), c => c.charCodeAt(0));
   
+  // Import key for AES-GCM (cast to fix TypeScript strictness)
   const key = await crypto.subtle.importKey(
     'raw',
-    sharedSecret.slice(0, 32),
+    sharedSecret as any,
     { name: 'AES-GCM' },
     false,
     ['decrypt']
   );
   
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    ciphertext
-  );
+  // Decrypt and verify authenticity (AES-GCM will throw if tampered)
+  let decrypted: ArrayBuffer;
+  try {
+    decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      ciphertext as any
+    );
+  } catch (error) {
+    throw new Error('Message authentication failed - possible tampering detected');
+  }
   
   const decoder = new TextDecoder();
-  return decoder.decode(decrypted);
+  const payload = JSON.parse(decoder.decode(decrypted));
+  
+  // Verify sequence number to prevent replay attacks
+  if (expectedSequence !== undefined && payload.sequence !== expectedSequence) {
+    throw new Error('Invalid sequence number - possible replay attack');
+  }
+  
+  // Check timestamp freshness (reject messages older than 5 minutes)
+  const age = Date.now() - payload.timestamp;
+  if (age > 5 * 60 * 1000) {
+    throw new Error('Message too old - possible replay attack');
+  }
+  
+  return {
+    text: payload.text,
+    sequence: payload.sequence,
+    timestamp: payload.timestamp
+  };
 }
 
 // Export public key as base64 for sharing
